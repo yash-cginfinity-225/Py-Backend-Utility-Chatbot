@@ -1,0 +1,9 @@
+# Ensure local .env is tracked (negate any parent ignore)
+.env
+
+# Default ignores for python and venv
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
