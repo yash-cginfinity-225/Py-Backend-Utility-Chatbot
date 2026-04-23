@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
 
     scheduler = BackgroundScheduler(timezone=ZoneInfo("Asia/Kolkata"))
     # scheduler.add_job(backup_session_blobs_to_db, "cron", hour=12, minute=57)
-    scheduler.add_job(backup_session_blobs_to_db, "interval", minutes=10)
+    scheduler.add_job(backup_session_blobs_to_db, "interval", minutes=3)
     scheduler.start()
     try:
         yield
