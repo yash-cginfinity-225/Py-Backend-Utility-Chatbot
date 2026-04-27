@@ -32,9 +32,9 @@ from zoneinfo import ZoneInfo
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
-    scheduler = BackgroundScheduler(timezone=ZoneInfo("Asia/Kolkata"))
-    # scheduler.add_job(backup_session_blobs_to_db, "cron", hour=12, minute=57)
-    scheduler.add_job(backup_session_blobs_to_db, "interval", minutes=3)
+    scheduler = BackgroundScheduler(timezone=ZoneInfo("America/Chicago"))
+    scheduler.add_job(backup_session_blobs_to_db, "cron", hour=0, minute=0)
+    # scheduler.add_job(backup_session_blobs_to_db, "interval", minutes=3)
     scheduler.start()
     try:
         yield
