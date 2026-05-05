@@ -7,18 +7,27 @@ Run:
   uvicorn api_layer:app --reload --port 8000
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import logging
 import re
 from pathlib import Path
 import json
+from typing import List, Optional
 
 from service_layer import process_chat
 from data_layer import get_clients
 import shutil
-from typing import Optional
+from blob_handler import (
+    create_client as blob_create_client,
+    download_blob as blob_download_blob,
+    list_clients as blob_list_clients,
+    list_all_files as blob_list_all_files,
+    upload_file as blob_upload_file,
+)
+from process_files import run_for_files
 from background_layer import upload_json_blob, backup_session_blobs_to_db, download_json_blob, upsert_feedback
 import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -110,6 +119,21 @@ class ChatResponse(BaseModel):
     serial: str | None = None
 
 
+class CreateClientRequest(BaseModel):
+    name: str
+
+
+class CreateClientResponse(BaseModel):
+    message: str
+    client: str
+
+
+class UploadResponse(BaseModel):
+    message: str
+    client: str
+    files: List[str]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sessions persistence (simple file store)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -186,6 +210,96 @@ def put_session(session_id: str, session: dict):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Client / upload endpoints ───────────────────────────
+
+@app.get("/clients", response_model=List[str])
+def get_client_list():
+    """Return all existing client names."""
+    try:
+        return blob_list_clients()
+    except Exception as exc:
+        logger.exception("Failed to list clients")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/clients", response_model=CreateClientResponse)
+def post_create_client(body: CreateClientRequest):
+    """Create sub-directories for a new client in both Uploaded_Files/ and Markdown_Files/."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Client name must not be empty.")
+    try:
+        blob_create_client(name)
+        return CreateClientResponse(message="Client created", client=name)
+    except Exception as exc:
+        logger.exception("Failed to create client")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/upload", response_model=UploadResponse)
+async def post_upload(
+    background_tasks: BackgroundTasks,
+    client_name: str = Form(...),
+    files: List[UploadFile] = File(...),
+):
+    """Upload one or more files for client_name and kick off processing."""
+    client_name = client_name.strip()
+    if not client_name:
+        raise HTTPException(status_code=400, detail="client_name is required.")
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one file is required.")
+
+    uploaded: list[str] = []
+    try:
+        for f in files:
+            blob_upload_file(client_name, f.filename, f.file)
+            uploaded.append(f.filename)
+            logger.info("Uploaded %s → %s", f.filename, client_name)
+    except Exception as exc:
+        logger.exception("Upload failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    background_tasks.add_task(run_for_files, client_name, uploaded)
+    logger.info("Processing queued for %d file(s) → %s", len(uploaded), client_name)
+
+    return UploadResponse(
+        message=f"{len(uploaded)} file(s) uploaded and processing started",
+        client=client_name,
+        files=uploaded,
+    )
+
+
+@app.get("/clients/{client_name}/files", response_model=List[str])
+def get_client_files(client_name: str):
+    """Return display names of all uploaded files for a client."""
+    try:
+        return blob_list_all_files(client_name)
+    except Exception as exc:
+        logger.exception("Failed to list client files")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/clients/{client_name}/files/{filename}/view")
+def view_client_file(client_name: str, filename: str):
+    """Download a file for inline viewing. Tries raw upload path first, then processed (read-) path."""
+    candidates = [
+        f"{client_name}/{filename}",
+        f"{client_name}/read-{filename}",
+    ]
+    for blob_path in candidates:
+        try:
+            data = blob_download_blob(blob_path)
+            content_type = "application/pdf" if filename.lower().endswith(".pdf") else "text/plain"
+            return Response(
+                content=data,
+                media_type=content_type,
+                headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            )
+        except Exception:
+            continue
+    raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
 
 @app.post("/chat", response_model=ChatResponse)
