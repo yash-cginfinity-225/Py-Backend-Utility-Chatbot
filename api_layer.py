@@ -19,7 +19,7 @@ from service_layer import process_chat
 from data_layer import get_clients
 import shutil
 from typing import Optional
-from background_layer import upload_json_blob, backup_session_blobs_to_db, download_json_blob, upsert_feedback
+from background_layer import upload_json_blob, backup_session_blobs_to_db, download_json_blob, upsert_feedback, _get_sql_connection
 import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
 from contextlib import asynccontextmanager
@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo
 async def lifespan(app: FastAPI):
 
     scheduler = BackgroundScheduler(timezone=ZoneInfo("America/Chicago"))
-    scheduler.add_job(backup_session_blobs_to_db, "cron", hour=11, minute=16)
+    scheduler.add_job(backup_session_blobs_to_db, "cron", hour=0, minute=0)
     # scheduler.add_job(backup_session_blobs_to_db, "interval", minutes=3)
     scheduler.start()
     try:
@@ -405,3 +405,36 @@ def post_feedback(req: FeedbackRequest):
         logger.exception("Error while persisting feedback to DB for %s/%s", req.session_id, serial)
 
     return {"ok": True, "serial": serial}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FAQ  —  most frequently asked questions
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/faq")
+def get_faq(limit: int = 50):
+    """Return the top questions by occurrence count with their most recent answer."""
+    try:
+        conn = _get_sql_connection()
+        cursor = conn.cursor()
+        sql = """
+            SELECT TOP (?) question, answer
+            FROM (
+                SELECT question, answer,
+                       ROW_NUMBER() OVER (PARTITION BY question ORDER BY created_at DESC) AS rn,
+                       COUNT(*) OVER (PARTITION BY question) AS cnt
+                FROM [utility].[SessionData]
+                WHERE question IS NOT NULL AND question != ''
+                  AND answer  IS NOT NULL AND answer  != ''
+            ) q
+            WHERE rn = 1
+            ORDER BY cnt DESC
+        """
+        cursor.execute(sql, limit)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [{"question": r[0], "answer": r[1]} for r in rows]
+    except Exception:
+        logger.exception("Failed to fetch FAQ data")
+        raise HTTPException(status_code=500, detail="Failed to fetch FAQ data")
