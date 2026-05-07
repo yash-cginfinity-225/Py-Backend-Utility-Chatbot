@@ -42,7 +42,7 @@ from zoneinfo import ZoneInfo
 async def lifespan(app: FastAPI):
 
     scheduler = BackgroundScheduler(timezone=ZoneInfo("America/Chicago"))
-    scheduler.add_job(backup_session_blobs_to_db, "cron", hour=2, minute=20)
+    scheduler.add_job(backup_session_blobs_to_db, "cron", hour=0, minute=0)
     # scheduler.add_job(backup_session_blobs_to_db, "interval", minutes=3)
     scheduler.start()
     try:
